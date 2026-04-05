@@ -31,6 +31,7 @@ import struct
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 # --- Shearwater decompression ------------------------------------------------
@@ -194,16 +195,19 @@ def apply_gps(db, dive_pk, dive_num, dive_z_opt, dive_notes,
     if exit_:
         gps_text += f" / Exit: {exit_[0]:.5f}, {exit_[1]:.5f}"
 
-    # Build site name from geocoded data or coordinates
+    # Build site name from geocoded data or coordinates (append dive number
+    # so each site is easy to find/edit in MacDive's dropdown)
+    dive_label = f" (Dive {dive_num})" if dive_num else ""
     if geo:
         country, location, water = geo
-        site_name = location or water or country or f"GPS {entry_lat:.4f}, {entry_lon:.4f}"
+        base_name = location or water or country or f"GPS {entry_lat:.4f}, {entry_lon:.4f}"
+        site_name = f"{base_name}{dive_label}"
         parts = [p for p in (location, country) if p]
         geo_text = ", ".join(parts)
         if geo_text:
             gps_text = f"{geo_text} — {gps_text}"
     else:
-        site_name = f"GPS {entry_lat:.4f}, {entry_lon:.4f}"
+        site_name = f"GPS {entry_lat:.4f}, {entry_lon:.4f}{dive_label}"
 
     # Build notes
     if dive_notes:
@@ -214,18 +218,27 @@ def apply_gps(db, dive_pk, dive_num, dive_z_opt, dive_notes,
     if dry_run:
         return gps_text
 
-    # Create new ZDIVESITE
+    # Create new ZDIVESITE — match MacDive's Core Data defaults:
+    #   ZUUID: required for Core Data object identity
+    #   ZMODIFIED: Core Data epoch timestamp
+    #   ZALTITUDE: defaults to 0.0
+    #   ZWATERTYPE: defaults to 'Salt' (most GPS dives are ocean)
+    #   ZDIFFICULTY: defaults to empty string (MacDive uses '' not NULL)
     site_pk = next_site_pk(db)
+    site_uuid = str(uuid.uuid4()).upper()
+    now = time.time() - 978307200  # Core Data epoch
 
     db.execute("""
         INSERT INTO ZDIVESITE
-            (Z_PK, Z_ENT, Z_OPT, ZNAME, ZGPSLAT, ZGPSLON,
-             ZCOUNTRY, ZLOCATION, ZBODYOFWATER)
-        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-    """, (site_pk, site_ent, site_name, entry_lat, entry_lon,
+            (Z_PK, Z_ENT, Z_OPT, ZUUID, ZNAME, ZGPSLAT, ZGPSLON,
+             ZCOUNTRY, ZLOCATION, ZBODYOFWATER, ZWATERTYPE,
+             ZDIFFICULTY, ZALTITUDE, ZMODIFIED)
+        VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'Salt', '', 0.0, ?)
+    """, (site_pk, site_ent, site_uuid, site_name, entry_lat, entry_lon,
           (geo[0] if geo else None),
           (geo[1] if geo else None),
-          (geo[2] if geo else None)))
+          (geo[2] if geo else None),
+          now))
 
     # Update Z_PRIMARYKEY.Z_MAX for DiveSite
     db.execute(
@@ -273,8 +286,15 @@ def main():
     if dry_run:
         print("=== DRY RUN (use --apply to write changes) ===\n")
     else:
-        # Back up before modifying
+        # Guard against running twice without reviewing the previous result.
+        # If a .bak already exists, the user should restore or remove it first.
         backup = db_path + ".bak"
+        if os.path.exists(backup):
+            print(f"ERROR: Backup already exists: {backup}")
+            print("This means a previous --apply run was done. Before running again:")
+            print(f"  • To keep previous changes: rm \"{backup}\"")
+            print(f"  • To undo previous changes: cp \"{backup}\" \"{db_path}\"")
+            sys.exit(1)
         shutil.copy2(db_path, backup)
         print(f"Backup saved to: {backup}\n")
 
