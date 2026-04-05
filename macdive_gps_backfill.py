@@ -194,13 +194,16 @@ def apply_gps(db, dive_pk, dive_num, dive_z_opt, dive_notes,
     if exit_:
         gps_text += f" / Exit: {exit_[0]:.5f}, {exit_[1]:.5f}"
 
-    geo_text = ""
+    # Build site name from geocoded data or coordinates
     if geo:
         country, location, water = geo
+        site_name = location or water or country or f"GPS {entry_lat:.4f}, {entry_lon:.4f}"
         parts = [p for p in (location, country) if p]
         geo_text = ", ".join(parts)
         if geo_text:
             gps_text = f"{geo_text} — {gps_text}"
+    else:
+        site_name = f"GPS {entry_lat:.4f}, {entry_lon:.4f}"
 
     # Build notes
     if dive_notes:
@@ -213,18 +216,16 @@ def apply_gps(db, dive_pk, dive_num, dive_z_opt, dive_notes,
 
     # Create new ZDIVESITE
     site_pk = next_site_pk(db)
-    now = time.time() - 978307200  # Core Data epoch
 
     db.execute("""
         INSERT INTO ZDIVESITE
-            (Z_PK, Z_ENT, Z_OPT, ZGPSLAT, ZGPSLON,
-             ZCOUNTRY, ZLOCATION, ZBODYOFWATER, ZMODIFIED)
+            (Z_PK, Z_ENT, Z_OPT, ZNAME, ZGPSLAT, ZGPSLON,
+             ZCOUNTRY, ZLOCATION, ZBODYOFWATER)
         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-    """, (site_pk, site_ent, entry_lat, entry_lon,
+    """, (site_pk, site_ent, site_name, entry_lat, entry_lon,
           (geo[0] if geo else None),
           (geo[1] if geo else None),
-          (geo[2] if geo else None),
-          now))
+          (geo[2] if geo else None)))
 
     # Update Z_PRIMARYKEY.Z_MAX for DiveSite
     db.execute(
